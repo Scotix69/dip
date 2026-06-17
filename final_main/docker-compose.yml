@@ -1,0 +1,72 @@
+services:
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.106.0
+    container_name: avlan-victoriametrics
+    command:
+      - "-storageDataPath=/victoria-metrics-data"
+      - "-httpListenAddr=:8428"
+      - "-retentionPeriod=1"
+    ports:
+      - "127.0.0.1:8428:8428"
+    volumes:
+      - victoriametrics_data:/victoria-metrics-data
+    restart: unless-stopped
+
+  netflow-collector:
+    image: scotix/avlan-netflow-collector:latest
+    container_name: avlan-netflow-collector
+    depends_on:
+      - victoriametrics
+    environment:
+      VM_URL: http://victoriametrics:8428
+      NETFLOW_LISTEN_HOST: 0.0.0.0
+      NETFLOW_LISTEN_PORT: "2055"
+      TEMPLATE_TTL_SEC: "3600"
+      LOG_LEVEL: DEBUG
+
+      # Файл с таймингами обработки пакетов.
+      # /data примонтирован в /opt/reconfiguration-manager на сервере.
+      PROCESSING_TIMES_FILE: /data/processing_times.csv
+
+      # VLAN-обогащение для NetFlow v5:
+      # Сервер 192.168.10.10 находится в VLAN 10, хост 192.168.20.11 — в VLAN 20.
+      V5_VLAN_SUBNET_MAP: '{"192.168.10.0/24":10,"192.168.20.0/24":20}'
+
+      # Защита канала телеметрии:
+      # В allowlist — IP роутера-экспортёра NetFlow.
+      ALLOWED_EXPORTERS: "192.168.10.1"
+
+      # Ограничение интенсивности приёма от одного источника, пакетов/с.
+      # 1000 — с запасом для типового маршрутизатора. 0 = выключено.
+      RATE_LIMIT_PPS: "1000"
+
+      # 1 = логировать каждое срабатывание [security]; 0 = только сводка раз в минуту.
+      SECURITY_LOG_VERBOSE: "1"
+
+      # Размер очереди между приёмником пакетов и обработчиком.
+      PACKET_QUEUE_SIZE: "10000"
+
+    ports:
+      - "2055:2055/udp"
+    volumes:
+      # Тайминги обработки пакетов видны на сервере по пути
+      # /opt/reconfiguration-manager/processing_times.csv
+      - /opt/reconfiguration-manager:/data
+    restart: unless-stopped
+
+  metrics-api:
+    image: scotix/avlan-metrics-api:latest
+    container_name: avlan-metrics-api
+    depends_on:
+      - victoriametrics
+    environment:
+      VM_URL: http://victoriametrics:8428
+      AGG_PERIOD_SEC: "60"
+      DEFAULT_LINK_CAPACITY_BPS: "100000000"
+      LOG_LEVEL: DEBUG
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  victoriametrics_data:
